@@ -6,28 +6,249 @@
   <title>移民案件期限与材料管理</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
+    main { max-width: 1080px; margin: auto; }
+    button { padding: .45rem .8rem; cursor: pointer; }
     pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: .4rem 0; }
+    table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+    th, td { border: 1px solid #d8dee4; padding: .45rem .6rem; text-align: left; font-size: .92rem; vertical-align: top; }
+    th { background: #f4f6f8; }
+    .removed { color: #8a949e; text-decoration: line-through; }
+    .tag { display: inline-block; padding: .05rem .45rem; border-radius: 10px; font-size: .8rem; }
+    .tag-active { background: #d9f2e6; color: #176b43; }
+    .tag-removed { background: #eceff2; color: #6b7580; }
+    .tag-minor { background: #fff0d9; color: #9a6200; }
+    .tag-adult { background: #e6ecff; color: #2748a3; }
+    .missing { color: #c0392b; font-weight: 600; }
+    .panel { border: 1px solid #d8dee4; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    .panel h3 { margin: .2rem 0 .6rem; }
+    input, select, textarea { padding: .4rem; border: 1px solid #c4ccd4; border-radius: 6px; }
+    #detail[hidden] { display: none; }
+    .muted { color: #6b7580; font-size: .88rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>移民案件期限与材料管理</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+  <div class="row">
+    <button id="load">加载记录</button>
+    <button id="stats">查看状态统计</button>
+    <span class="muted">身份：
+      <select id="role">
+        <option value="admin">admin</option>
+        <option value="intake_officer">收案员</option>
+        <option value="legal_rep">法务代表</option>
+        <option value="case_officer">审理员</option>
+        <option value="supervisor">主管</option>
+      </select>
+    </span>
+  </div>
+  <pre id="output">点击“加载记录”读取案件列表，再点记录编号打开详情。</pre>
+
+  <section id="detail" hidden>
+    <div class="row"><h2 id="d-title"></h2><span id="d-state" class="tag tag-active"></span><span class="muted" id="d-version"></span></div>
+
+    <div class="panel">
+      <h3>随行家属台账</h3>
+      <p class="muted">收案登记关系与出生日期；未成年子女要求监护声明。退出者保留历史材料。</p>
+      <table>
+        <thead><tr><th>编号</th><th>姓名/关系</th><th>出生日期</th><th>成年状态</th><th>名单状态</th><th>要求材料</th><th>已交材料</th><th>缺项</th></tr></thead>
+        <tbody id="roster-body"></tbody>
+      </table>
+      <h3>待补区（当前在案人员缺项并集）</h3>
+      <div id="pending"></div>
+    </div>
+
+    <div class="panel">
+      <h3>名单变动</h3>
+      <table>
+        <thead><tr><th>#</th><th>日期</th><th>类型</th><th>人员</th><th>说明</th></tr></thead>
+        <tbody id="changes-body"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>调整名单</h3>
+      <div class="row">
+        <input id="add-name" placeholder="家属姓名">
+        <select id="add-rel"><option value="spouse">配偶</option><option value="child">子女</option><option value="parent">父母</option></select>
+        <input id="add-birth" type="date">
+        <input id="add-date" type="date" title="变动日期，默认今天">
+        <button id="btn-add">新增家属</button>
+      </div>
+      <div class="row">
+        <select id="rm-person"></select>
+        <input id="rm-reason" placeholder="退出原因">
+        <button id="btn-remove">退出名单</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>登记材料（挂到对应人员名下）</h3>
+      <div class="row">
+        <select id="doc-person"></select>
+        <input id="doc-list" placeholder="材料代码，逗号分隔，如 passport,birth_certificate" style="min-width:320px">
+        <input id="doc-date" type="date" title="登记日期，默认今天">
+        <button id="btn-docs">提交材料</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>流程动作</h3>
+      <div class="row">
+        <button data-act="submit">提交申请（draft→submitted）</button>
+        <button data-act="decide">作出决定</button>
+        <button data-act="reopen">重开案件（主管）</button>
+        <button id="btn-audit">查看审计时间线</button>
+      </div>
+      <pre id="action-output" hidden></pre>
+    </div>
+  </section>
 </main>
 <script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+const out = document.getElementById("output");
+let current = null;
+
+function headers() {
+  return {"X-User-Id": "demo-" + document.getElementById("role").value, "X-Role": document.getElementById("role").value, "X-Org": "demo"};
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+async function api(path, options) {
+  const response = await fetch(path, Object.assign({headers: headers()}, options || {}));
+  const data = await response.json();
+  if (!response.ok) throw new Error((data.message || response.statusText));
+  return data;
+}
+function esc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+const DOC_LABELS = {passport:"护照", id_copy:"身份证明", marriage_certificate:"结婚证明", birth_certificate:"出生证明", kinship_certificate:"亲属关系证明", guardianship_declaration:"监护声明", sponsor_letter:"担保函"};
+const docText = code => DOC_LABELS[code] || code;
+const REL = {spouse:"配偶", child:"子女", parent:"父母"};
+
+document.getElementById("load").onclick = async () => {
+  const data = await api("/api/records?limit=50");
+  out.hidden = false;
+  out.textContent = JSON.stringify(data, null, 2);
+  const links = data.items.map(r => `<button onclick="openRecord(${r.id})">${esc(r.reference)}（#${r.id}, ${esc(r.state)}）</button>`).join(" ");
+  out.innerHTML = "<b>点击打开详情：</b><br><br>" + links;
+};
+document.getElementById("stats").onclick = async () => {
+  out.hidden = false;
+  out.textContent = JSON.stringify(await api("/api/stats"), null, 2);
+};
+
+window.openRecord = async function (id) {
+  current = await api("/api/records/" + id);
+  renderDetail();
+};
+
+function personRows(p) {
+  const roster = p.roster || [];
+  const req = p.required_by_person || {};
+  const miss = p.missing_by_person || {};
+  const submitted = p.person_documents || {};
+  const rows = [{person_id: "primary", name: "主申请人", relationship: "", minor: false, status: "active", birth_date: ""}]
+    .concat(roster);
+  return rows.map(e => {
+    const pid = e.person_id;
+    const isPrimary = pid === "primary";
+    const reqHtml = (req[pid] || []).map(docText).join("、") || "—";
+    const subHtml = (submitted[pid] || []).map(docText).join("、") || "—";
+    const missHtml = (miss[pid] || []).length
+      ? '<span class="missing">' + (miss[pid] || []).map(docText).join("、") + "</span>" : "✓ 齐全";
+    const ageTag = isPrimary ? "" : (e.minor
+      ? '<span class="tag tag-minor">未成年</span>' : '<span class="tag tag-adult">成年</span>');
+    const statusTag = e.status === "active"
+      ? '<span class="tag tag-active">在册</span>'
+      : '<span class="tag tag-removed">已退出</span>';
+    const name = (isPrimary ? "主申请人" : esc(e.name) + (e.relationship ? "（" + REL[e.relationship] + "）" : ""));
+    return `<tr class="${e.status === "removed" ? "removed" : ""}">
+      <td>${esc(pid)}</td><td>${name}</td><td>${esc(e.birth_date || "—")}</td>
+      <td>${ageTag || "—"}</td><td>${statusTag}</td><td>${reqHtml}</td><td>${subHtml}</td><td>${missHtml}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderDetail() {
+  const p = current.payload;
+  document.getElementById("detail").hidden = false;
+  document.getElementById("d-title").textContent = current.reference + "（#" + current.id + "）";
+  const stateEl = document.getElementById("d-state");
+  stateEl.textContent = current.state;
+  stateEl.className = current.state === "closed" ? "tag tag-removed" : "tag tag-active";
+  document.getElementById("d-version").textContent = "版本 v" + current.version;
+  document.getElementById("roster-body").innerHTML = personRows(p);
+
+  const pending = p.pending_documents || [];
+  document.getElementById("pending").innerHTML = pending.length
+    ? '<span class="missing">' + pending.map(docText).join("、") + "</span>"
+    : "✓ 当前在案人员材料齐全";
+
+  const changes = (p.roster_changes || []).slice().reverse();
+  document.getElementById("changes-body").innerHTML = changes.map(c =>
+    `<tr><td>${c.seq}</td><td>${esc(c.date)}</td><td>${esc(c.type)}</td><td>${esc(c.name)}（${esc(c.person_id)}）</td><td>${esc(c.detail)}</td></tr>`
+  ).join("") || '<tr><td colspan="5" class="muted">暂无变动</td></tr>';
+
+  const activeOptions = [{person_id: "primary", name: "主申请人"}]
+    .concat((p.roster || []).filter(e => e.status === "active").map(e => ({person_id: e.person_id, name: e.name})));
+  const options = activeOptions.map(e => `<option value="${e.person_id}">${esc(e.person_id)} ${esc(e.name)}</option>`).join("");
+  document.getElementById("doc-person").innerHTML = options;
+  document.getElementById("rm-person").innerHTML = (p.roster || []).filter(e => e.status === "active")
+    .map(e => `<option value="${e.person_id}">${esc(e.person_id)} ${esc(e.name)}</option>`).join("");
+}
+
+function mutate(path, data) {
+  return api(path, {method: "POST", headers: Object.assign(headers(), {"Content-Type": "application/json"}),
+    body: JSON.stringify({expected_version: current.version, data})});
+}
+async function refreshAfter(promise) {
+  try {
+    current = await promise;
+    renderDetail();
+    const ao = document.getElementById("action-output");
+    ao.hidden = false;
+    ao.textContent = "成功，当前状态：" + current.state + "，版本 v" + current.version;
+  } catch (exc) {
+    const ao = document.getElementById("action-output");
+    ao.hidden = false;
+    ao.textContent = "操作失败：" + exc.message;
+  }
+}
+
+document.getElementById("btn-add").onclick = () => {
+  const person = {name: document.getElementById("add-name").value.trim(),
+    relationship: document.getElementById("add-rel").value, birth_date: document.getElementById("add-birth").value};
+  const data = {op: "add", person, as_of_date: document.getElementById("add-date").value || undefined};
+  refreshAfter(mutate("/api/records/" + current.id + "/roster", data));
+};
+document.getElementById("btn-remove").onclick = () => {
+  const data = {op: "remove", person_id: document.getElementById("rm-person").value,
+    reason: document.getElementById("rm-reason").value.trim(),
+    as_of_date: document.getElementById("add-date").value || undefined};
+  refreshAfter(mutate("/api/records/" + current.id + "/roster", data));
+};
+document.getElementById("btn-docs").onclick = () => {
+  const documents = document.getElementById("doc-list").value.split(",").map(s => s.trim()).filter(Boolean);
+  const data = {person_id: document.getElementById("doc-person").value, documents,
+    as_of_date: document.getElementById("doc-date").value || undefined};
+  refreshAfter(mutate("/api/records/" + current.id + "/documents", data));
+};
+
+document.querySelectorAll("[data-act]").forEach(btn => {
+  btn.onclick = () => {
+    const act = btn.getAttribute("data-act");
+    const data = act === "submit" ? {documents: current.payload.person_documents && current.payload.person_documents.primary || current.payload.required_documents || []}
+      : act === "decide" ? {decision: "granted", decision_reason: "页面快速决定"}
+      : act === "reopen" ? {reopen_reason: "页面操作重开核对"} : {};
+    refreshAfter(mutate("/api/records/" + current.id + "/actions/" + act, data));
+  };
+});
+document.getElementById("btn-audit").onclick = async () => {
+  const data = await api("/api/records/" + current.id + "/audit");
+  const ao = document.getElementById("action-output");
+  ao.hidden = false;
+  ao.textContent = JSON.stringify(data.items.map(e => ({action: e.action, version: e.version, details: e.details})), null, 2);
+};
 </script>
 </body>
 </html>

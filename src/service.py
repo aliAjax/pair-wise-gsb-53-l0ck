@@ -2,7 +2,7 @@
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
-from .domain import Actor, PermissionDenied, text
+from .domain import Actor, Conflict, PermissionDenied, ValidationError, text
 from .repository import Repository
 from .rules import DomainRules
 
@@ -61,6 +61,51 @@ class Service:
             action=action,
             details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
         )
+
+    def change_roster(self, actor: Actor, record_id: int, expected_version: int, data: Dict[str, Any]) -> Dict[str, Any]:
+        """随行家属新增或退出；变动后按当前人员重算材料。"""
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_roster(actor.role):
+            raise PermissionDenied("角色无权调整随行名单")
+        record = self.repository.get(record_id)
+        self._check_version(record, expected_version)
+        new_payload, detail = self.rules.change_roster(record, data or {}, actor.user_id)
+        return self.repository.mutate(
+            record_id=record_id,
+            expected_version=int(expected_version),
+            state=record["state"],
+            payload=new_payload,
+            actor_id=actor.user_id,
+            action="roster_change",
+            details={"summary": detail, "input": data or {}, "state": record["state"]},
+        )
+
+    def submit_person_documents(self, actor: Actor, record_id: int, expected_version: int, data: Dict[str, Any]) -> Dict[str, Any]:
+        """材料挂在对应人员名下（主申请人或在册家属），并重算缺项。"""
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_documents(actor.role):
+            raise PermissionDenied("角色无权登记材料")
+        record = self.repository.get(record_id)
+        self._check_version(record, expected_version)
+        new_payload, detail = self.rules.submit_person_documents(record, data or {}, actor.user_id)
+        return self.repository.mutate(
+            record_id=record_id,
+            expected_version=int(expected_version),
+            state=record["state"],
+            payload=new_payload,
+            actor_id=actor.user_id,
+            action="person_documents",
+            details={"summary": detail, "input": data or {}, "state": record["state"]},
+        )
+
+    @staticmethod
+    def _check_version(record: Dict[str, Any], expected_version) -> None:
+        if not isinstance(expected_version, int):
+            raise ValidationError("expected_version必须是整数")
+        if int(record["version"]) != int(expected_version):
+            raise Conflict("版本冲突，请刷新后重试")
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)
